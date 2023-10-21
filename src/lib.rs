@@ -1,3 +1,4 @@
+use atomic_f64::AtomicF64;
 use clack_extensions::{
     audio_ports::{
         AudioPortFlags, AudioPortInfoData, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
@@ -12,13 +13,16 @@ use clack_extensions::{
     },
 };
 use clack_plugin::{
+    events::event_types::ParamValueEvent,
     plugin::descriptor::features::{STEREO, SYNTHESIZER},
     prelude::*,
     process::audio::PairedChannels,
     utils::Cookie,
 };
 use num::Float;
-use std::{f64::consts::PI, ffi::CStr, num::Wrapping};
+use std::{f64::consts::PI, ffi::CStr, num::Wrapping, sync::atomic::Ordering};
+
+mod atomic_f64;
 
 pub struct Picosine;
 
@@ -46,32 +50,48 @@ impl Plugin for Picosine {
 
 pub struct PicosineAudioProcessor<'a> {
     _host: HostAudioThreadHandle<'a>,
-    freq_hz: f64,
+    shared: &'a PicosineShared<'a>,
     rate_hz: f64,
     gain_factor: f64,
     time_sc: Wrapping<u32>,
 }
 
 impl<'a> PicosineAudioProcessor<'a> {
-    fn write_signal<S: Float>(&self, output: &mut [S]) {
+    fn write_signal<S: Float>(&self, output: &mut [S], freq_hz: f64) {
         for (idx, output) in output.iter_mut().enumerate() {
             *output = S::from(
                 f64::sin(
-                    2.0f64 * PI * self.freq_hz * (self.time_sc.0 as usize + idx) as f64
-                        / self.rate_hz,
+                    2.0f64 * PI * freq_hz * (self.time_sc.0 as usize + idx) as f64 / self.rate_hz,
                 ) * self.gain_factor,
             )
             .unwrap()
         }
     }
 
-    fn process_channel_pairs<T: Float>(&self, channel_pairs: PairedChannels<T>) {
+    fn process_channel_pairs<T: Float>(&self, channel_pairs: PairedChannels<T>, freq_hz: f64) {
         for channel_pair in channel_pairs {
             match channel_pair {
                 ChannelPair::InputOnly(_) => {}
-                ChannelPair::OutputOnly(output) => self.write_signal(output),
-                ChannelPair::InputOutput(_input, output) => self.write_signal(output),
-                ChannelPair::InPlace(buf) => self.write_signal(buf),
+                ChannelPair::OutputOnly(output) => self.write_signal(output, freq_hz),
+                ChannelPair::InputOutput(_input, output) => self.write_signal(output, freq_hz),
+                ChannelPair::InPlace(buf) => self.write_signal(buf, freq_hz),
+            }
+        }
+    }
+
+    fn handle_events(&mut self, events: Events) {
+        let input_param_value_events = events
+            .input
+            .into_iter()
+            .filter_map(|event| event.as_event::<ParamValueEvent>());
+
+        for input_param_value_event in input_param_value_events {
+            match (
+                input_param_value_event.param_id(),
+                input_param_value_event.value(),
+            ) {
+                (0, new_freq_hz) => self.shared.freq_hz.store(new_freq_hz, Ordering::Relaxed),
+                (_, _new_value) => panic!("unknown input parameter id"),
             }
         }
     }
@@ -83,12 +103,12 @@ impl<'a> PluginAudioProcessor<'a, PicosineShared<'a>, PicosineMainThread<'a>>
     fn activate(
         host: HostAudioThreadHandle<'a>,
         _main_thread: &mut PicosineMainThread,
-        _shared: &'a PicosineShared,
+        shared: &'a PicosineShared,
         audio_config: AudioConfiguration,
     ) -> Result<Self, PluginError> {
         Ok(Self {
+            shared: shared,
             gain_factor: 0.5,
-            freq_hz: 440.0,
             rate_hz: audio_config.sample_rate,
             time_sc: Wrapping(0),
             _host: host,
@@ -99,15 +119,23 @@ impl<'a> PluginAudioProcessor<'a, PicosineShared<'a>, PicosineMainThread<'a>>
         &mut self,
         _process: Process,
         mut audio: Audio,
-        _events: Events,
+        events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        self.handle_events(events);
+
+        let freq_hz = self.shared.freq_hz.load(Ordering::Relaxed);
+
         for mut port_pair in &mut audio {
             match port_pair.channels().unwrap() {
                 SampleType::Both(_f32_channel_pairs, f64_channel_pairs) => {
-                    self.process_channel_pairs(f64_channel_pairs)
+                    self.process_channel_pairs(f64_channel_pairs, freq_hz)
                 }
-                SampleType::F32(f32_channel_pairs) => self.process_channel_pairs(f32_channel_pairs),
-                SampleType::F64(f64_channel_pairs) => self.process_channel_pairs(f64_channel_pairs),
+                SampleType::F32(f32_channel_pairs) => {
+                    self.process_channel_pairs(f32_channel_pairs, freq_hz)
+                }
+                SampleType::F64(f64_channel_pairs) => {
+                    self.process_channel_pairs(f64_channel_pairs, freq_hz)
+                }
             };
         }
 
@@ -119,18 +147,21 @@ impl<'a> PluginAudioProcessor<'a, PicosineShared<'a>, PicosineMainThread<'a>>
 
 pub struct PicosineShared<'a> {
     _host: HostHandle<'a>,
+    freq_hz: AtomicF64,
 }
 
 impl<'a> PluginShared<'a> for PicosineShared<'a> {
     fn new(host: HostHandle<'a>) -> Result<Self, PluginError> {
-        Ok(Self { _host: host })
+        Ok(Self {
+            _host: host,
+            freq_hz: AtomicF64::new(440.0),
+        })
     }
 }
 
 pub struct PicosineMainThread<'a> {
-    _shared: &'a PicosineShared<'a>,
+    shared: &'a PicosineShared<'a>,
     _host: HostMainThreadHandle<'a>,
-    freq_hz: f64,
 }
 
 impl<'a> PluginMainThread<'a, PicosineShared<'a>> for PicosineMainThread<'a> {
@@ -139,9 +170,8 @@ impl<'a> PluginMainThread<'a, PicosineShared<'a>> for PicosineMainThread<'a> {
         shared: &'a PicosineShared,
     ) -> Result<Self, PluginError> {
         Ok(Self {
-            _shared: shared,
+            shared: shared,
             _host: host,
-            freq_hz: 440.0,
         })
     }
 }
@@ -171,6 +201,7 @@ impl<'a> PluginAudioProcessorParams for PicosineAudioProcessor<'a> {
         _input_parameter_changes: &InputEvents,
         _output_parameter_changes: &mut OutputEvents,
     ) {
+        // Not sure what flush does, ignoring for now. ~ Stef 21 okt 2023.
     }
 }
 
@@ -198,7 +229,7 @@ impl<'a> PluginMainThreadParams for PicosineMainThread<'a> {
 
     fn get_value(&self, param_id: u32) -> Option<f64> {
         if param_id == 0 {
-            Some(self.freq_hz as f64)
+            Some(self.shared.freq_hz.load(Ordering::Relaxed))
         } else {
             None
         }
@@ -211,8 +242,6 @@ impl<'a> PluginMainThreadParams for PicosineMainThread<'a> {
         writer: &mut ParamDisplayWriter,
     ) -> core::fmt::Result {
         use ::core::fmt::Write;
-        println!("Format param {param_id}, value {value}");
-
         if param_id == 0 {
             write!(writer, "{} hz", value as u32)
         } else {
@@ -225,16 +254,7 @@ impl<'a> PluginMainThreadParams for PicosineMainThread<'a> {
     }
 
     fn flush(&mut self, _input_events: &InputEvents, _output_events: &mut OutputEvents) {
-        // let value_events = input_events.iter().filter_map(|e| match e.as_event()? {
-        //     Event::ParamValue(v) => Some(v),
-        //     _ => None,
-        // });
-
-        // for value in value_events {
-        //     if value.param_id() == 0 {
-        //         self.freq_hz = value.value() as u32;
-        //     }
-        // }
+        // Not sure what flush does, ignoring for now. ~ Stef 21 okt 2023.
     }
 }
 
