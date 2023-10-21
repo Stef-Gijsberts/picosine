@@ -63,8 +63,8 @@ pub fn it_works() {
 
     host.activate();
 
-    host.inputs_mut()[0].fill(69f32);
-    host.inputs_mut()[1].fill(69f32);
+    host.inputs_mut()[0].fill(0f32);
+    host.inputs_mut()[1].fill(0f32);
 
     host.process().unwrap();
 
