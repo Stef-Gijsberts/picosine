@@ -241,7 +241,7 @@ impl<'a> PluginMainThreadParams for PicosineMainThread<'a> {
         value: f64,
         writer: &mut ParamDisplayWriter,
     ) -> core::fmt::Result {
-        use ::core::fmt::Write;
+        use core::fmt::Write;
         if param_id == 0 {
             write!(writer, "{} hz", value as u32)
         } else {
