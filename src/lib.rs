@@ -1,11 +1,21 @@
-use clack_extensions::audio_ports::{
-    AudioPortFlags, AudioPortInfoData, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
-    PluginAudioPortsImpl,
+use clack_extensions::{
+    audio_ports::{
+        AudioPortFlags, AudioPortInfoData, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
+        PluginAudioPortsImpl,
+    },
+    params::{
+        implementation::{
+            ParamDisplayWriter, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams,
+        },
+        info::{ParamInfoData, ParamInfoFlags},
+        PluginParams,
+    },
 };
 use clack_plugin::{
     plugin::descriptor::features::{STEREO, SYNTHESIZER},
     prelude::*,
     process::audio::PairedChannels,
+    utils::Cookie,
 };
 use num::Float;
 use std::{f64::consts::PI, ffi::CStr, num::Wrapping};
@@ -28,24 +38,28 @@ impl Plugin for Picosine {
     }
 
     fn declare_extensions(builder: &mut PluginExtensions<Self>, _shared: &PicosineShared) {
-        builder.register::<PluginAudioPorts>();
+        builder
+            .register::<PluginAudioPorts>()
+            .register::<PluginParams>();
     }
 }
 
 pub struct PicosineAudioProcessor<'a> {
     _host: HostAudioThreadHandle<'a>,
-    freq: f64,
-    rate: f64,
-    gain: f64,
-    t: Wrapping<u32>,
+    freq_hz: f64,
+    rate_hz: f64,
+    gain_factor: f64,
+    time_sc: Wrapping<u32>,
 }
 
 impl<'a> PicosineAudioProcessor<'a> {
     fn write_signal<S: Float>(&self, output: &mut [S]) {
         for (idx, output) in output.iter_mut().enumerate() {
             *output = S::from(
-                f64::sin(2.0f64 * PI * self.freq * (self.t.0 as usize + idx) as f64 / self.rate)
-                    * self.gain,
+                f64::sin(
+                    2.0f64 * PI * self.freq_hz * (self.time_sc.0 as usize + idx) as f64
+                        / self.rate_hz,
+                ) * self.gain_factor,
             )
             .unwrap()
         }
@@ -73,10 +87,10 @@ impl<'a> PluginAudioProcessor<'a, PicosineShared<'a>, PicosineMainThread<'a>>
         audio_config: AudioConfiguration,
     ) -> Result<Self, PluginError> {
         Ok(Self {
-            gain: 0.5,
-            freq: 440.0,
-            rate: audio_config.sample_rate,
-            t: Wrapping(0),
+            gain_factor: 0.5,
+            freq_hz: 440.0,
+            rate_hz: audio_config.sample_rate,
+            time_sc: Wrapping(0),
             _host: host,
         })
     }
@@ -97,7 +111,7 @@ impl<'a> PluginAudioProcessor<'a, PicosineShared<'a>, PicosineMainThread<'a>>
             };
         }
 
-        self.t += audio.frames_count();
+        self.time_sc += audio.frames_count();
 
         Ok(ProcessStatus::Continue)
     }
@@ -116,6 +130,7 @@ impl<'a> PluginShared<'a> for PicosineShared<'a> {
 pub struct PicosineMainThread<'a> {
     _shared: &'a PicosineShared<'a>,
     _host: HostMainThreadHandle<'a>,
+    freq_hz: f64,
 }
 
 impl<'a> PluginMainThread<'a, PicosineShared<'a>> for PicosineMainThread<'a> {
@@ -126,6 +141,7 @@ impl<'a> PluginMainThread<'a, PicosineShared<'a>> for PicosineMainThread<'a> {
         Ok(Self {
             _shared: shared,
             _host: host,
+            freq_hz: 440.0,
         })
     }
 }
@@ -146,6 +162,79 @@ impl<'a> PluginAudioPortsImpl for PicosineMainThread<'a> {
                 in_place_pair: None,
             });
         }
+    }
+}
+
+impl<'a> PluginAudioProcessorParams for PicosineAudioProcessor<'a> {
+    fn flush(
+        &mut self,
+        _input_parameter_changes: &InputEvents,
+        _output_parameter_changes: &mut OutputEvents,
+    ) {
+    }
+}
+
+impl<'a> PluginMainThreadParams for PicosineMainThread<'a> {
+    fn count(&self) -> u32 {
+        1
+    }
+
+    fn get_info(&self, param_index: u32, info: &mut ParamInfoWriter) {
+        if param_index > 0 {
+            return;
+        }
+
+        info.set(&ParamInfoData {
+            id: 0,
+            name: "Frequency",
+            module: "picosine/frequency",
+            default_value: 440.0,
+            min_value: 30.0,
+            max_value: 1000.0,
+            flags: ParamInfoFlags::IS_STEPPED,
+            cookie: Cookie::empty(),
+        })
+    }
+
+    fn get_value(&self, param_id: u32) -> Option<f64> {
+        if param_id == 0 {
+            Some(self.freq_hz as f64)
+        } else {
+            None
+        }
+    }
+
+    fn value_to_text(
+        &self,
+        param_id: u32,
+        value: f64,
+        writer: &mut ParamDisplayWriter,
+    ) -> core::fmt::Result {
+        use ::core::fmt::Write;
+        println!("Format param {param_id}, value {value}");
+
+        if param_id == 0 {
+            write!(writer, "{} hz", value as u32)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn text_to_value(&self, _param_id: u32, _text: &str) -> Option<f64> {
+        None
+    }
+
+    fn flush(&mut self, _input_events: &InputEvents, _output_events: &mut OutputEvents) {
+        // let value_events = input_events.iter().filter_map(|e| match e.as_event()? {
+        //     Event::ParamValue(v) => Some(v),
+        //     _ => None,
+        // });
+
+        // for value in value_events {
+        //     if value.param_id() == 0 {
+        //         self.freq_hz = value.value() as u32;
+        //     }
+        // }
     }
 }
 
