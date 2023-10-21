@@ -19,6 +19,16 @@ cp ./target/debug/libpicosine.so ~/.clap/picosine.clap
 
 Then use a DAW that supports CLAP plugins (I use Bitwig), and load the plugin.
 
+## About CLAP
+
+CLAP stands for CLever Audio Plugin.
+
+Sources:
+
+- Website with general background, good starting point: https://cleveraudio.org/
+- The git repository for the API: https://github.com/free-audio/clap
+- Clack, a safe Rust wrapper for the CLAP API: https://github.com/prokopyl/clack
+
 ## Copying
 
     PicoSine - a basic synthesizer audio plugin.
