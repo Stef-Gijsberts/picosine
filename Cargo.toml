@@ -1,0 +1,15 @@
+[package]
+name = "picosine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+clack-extensions = { git = "https://github.com/prokopyl/clack", version = "0.1.0", features = ["audio-ports", "params", "state", "clack-plugin", "clack-host"]  }
+clack-plugin = { git = "https://github.com/prokopyl/clack", version = "0.1.0" }
+num = "0.4.1"
+
+[dev-dependencies]
+clack-test-host = { git = "https://github.com/prokopyl/clack", version = "0.1.0" }
