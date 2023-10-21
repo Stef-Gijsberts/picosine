@@ -13,3 +13,6 @@ num = "0.4.1"
 
 [dev-dependencies]
 clack-test-host = { git = "https://github.com/prokopyl/clack", version = "0.1.0" }
+
+[profile.dev]
+opt-level = 3
