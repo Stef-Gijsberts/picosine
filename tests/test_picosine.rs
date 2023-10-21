@@ -68,7 +68,7 @@ pub fn it_works() {
 
     host.process().unwrap();
 
-    // Check that the output is not static
+    // Check that the output is not just zeroes
     for channel_index in 0..1 {
         let _inbuf = &host.inputs()[channel_index];
         let outbuf = &host.outputs()[channel_index];
